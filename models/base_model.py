@@ -4,6 +4,8 @@ from collections import OrderedDict
 from abc import ABC, abstractmethod
 from . import networks
 
+import icecream
+
 
 class BaseModel(ABC):
     """This class is an abstract base class (ABC) for models.
@@ -29,6 +31,7 @@ class BaseModel(ABC):
             -- self.visual_names (str list):        specify the images that you want to display and save.
             -- self.optimizers (optimizer list):    define and initialize optimizers. You can define one optimizer for each network. If two networks are updated at the same time, you can use itertools.chain to group them. See cycle_gan_model.py for an example.
         """
+
         self.opt = opt
         self.gpu_ids = opt.gpu_ids
         self.isTrain = opt.isTrain
@@ -101,6 +104,7 @@ class BaseModel(ABC):
         This function wraps <forward> function in no_grad() so we don't save intermediate steps for backprop
         It also calls <compute_visuals> to produce additional visualization results
         """
+
         with torch.no_grad():
             self.forward()
             self.compute_visuals()

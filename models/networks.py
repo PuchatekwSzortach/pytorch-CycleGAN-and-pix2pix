@@ -4,6 +4,8 @@ from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
 
+import icecream
+
 
 ###############################################################################
 # Helper Functions
@@ -76,6 +78,7 @@ def init_weights(net, init_type='normal', init_gain=0.02):
     We use 'normal' in the original pix2pix and CycleGAN paper. But xavier and kaiming might
     work better for some applications. Feel free to try yourself.
     """
+
     def init_func(m):  # define the initialization function
         classname = m.__class__.__name__
         if hasattr(m, 'weight') and (classname.find('Conv') != -1 or classname.find('Linear') != -1):
@@ -117,7 +120,9 @@ def init_net(net, init_type='normal', init_gain=0.02, gpu_ids=[]):
     return net
 
 
-def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, init_type='normal', init_gain=0.02, gpu_ids=[]):
+def define_G(
+        input_nc, output_nc, ngf,
+        netG, norm='batch', use_dropout=False, init_type='normal', init_gain=0.02, gpu_ids=[]):
     """Create a generator
 
     Parameters:
@@ -154,7 +159,13 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
     elif netG == 'unet_128':
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
-        net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+        net = UnetGenerator(
+            input_nc=input_nc,
+            output_nc=output_nc,
+            num_downs=8,
+            ngf=ngf,
+            norm_layer=norm_layer,
+            use_dropout=use_dropout)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % netG)
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -194,7 +205,13 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
     norm_layer = get_norm_layer(norm_type=norm)
 
     if netD == 'basic':  # default PatchGAN classifier
-        net = NLayerDiscriminator(input_nc, ndf, n_layers=3, norm_layer=norm_layer)
+
+        net = NLayerDiscriminator(
+            input_nc=input_nc,
+            ndf=ndf,
+            n_layers=3,
+            norm_layer=norm_layer)
+
     elif netD == 'n_layers':  # more options
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer)
     elif netD == 'pixel':     # classify if each pixel is real or fake
@@ -452,14 +469,59 @@ class UnetGenerator(nn.Module):
         """
         super(UnetGenerator, self).__init__()
         # construct unet structure
-        unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)  # add the innermost layer
-        for i in range(num_downs - 5):          # add intermediate layers with ngf * 8 filters
-            unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, use_dropout=use_dropout)
+
+        unet_block = UnetSkipConnectionBlock(
+            outer_nc=ngf * 8,
+            inner_nc=ngf * 8,
+            input_nc=None,
+            submodule=None,
+            norm_layer=norm_layer,
+            innermost=True)  # add the innermost layer
+
+        # for index in range(num_downs - 5):          # add intermediate layers with ngf * 8 filters
+        for index in range(7, num_downs - 4, -1):          # add intermediate layers with ngf * 8 filters
+
+            unet_block = UnetSkipConnectionBlock(
+                outer_nc=ngf * 8,
+                inner_nc=ngf * 8,
+                input_nc=None,
+                submodule=unet_block,
+                norm_layer=norm_layer,
+                use_dropout=use_dropout,
+                block_index=index)
+
         # gradually reduce the number of filters from ngf * 8 to ngf
-        unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
-        self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer)  # add the outermost layer
+        unet_block = UnetSkipConnectionBlock(
+            outer_nc=ngf * 4,
+            inner_nc=ngf * 8,
+            input_nc=None,
+            submodule=unet_block,
+            norm_layer=norm_layer,
+            block_index=4)
+
+        unet_block = UnetSkipConnectionBlock(
+            outer_nc=ngf * 2,
+            inner_nc=ngf * 4,
+            input_nc=None,
+            submodule=unet_block,
+            norm_layer=norm_layer,
+            block_index=3)
+
+        unet_block = UnetSkipConnectionBlock(
+            outer_nc=ngf,
+            inner_nc=ngf * 2,
+            input_nc=None,
+            submodule=unet_block,
+            norm_layer=norm_layer,
+            block_index=2)
+
+        self.model = UnetSkipConnectionBlock(
+            outer_nc=output_nc,
+            inner_nc=ngf,
+            input_nc=input_nc,
+            submodule=unet_block,
+            outermost=True,
+            norm_layer=norm_layer)  # add the outermost layer
 
     def forward(self, input):
         """Standard forward"""
@@ -472,8 +534,10 @@ class UnetSkipConnectionBlock(nn.Module):
         |-- downsampling -- |submodule| -- upsampling --|
     """
 
-    def __init__(self, outer_nc, inner_nc, input_nc=None,
-                 submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False):
+    def __init__(
+            self, outer_nc, inner_nc, input_nc=None,
+            submodule=None, outermost=False, innermost=False, norm_layer=nn.BatchNorm2d, use_dropout=False,
+            block_index=None):
         """Construct a Unet submodule with skip connections.
 
         Parameters:
@@ -485,6 +549,7 @@ class UnetSkipConnectionBlock(nn.Module):
             innermost (bool)    -- if this module is the innermost module
             norm_layer          -- normalization layer
             use_dropout (bool)  -- if use dropout layers.
+            block_index (int|None)  -- optional block index for debugging
         """
         super(UnetSkipConnectionBlock, self).__init__()
         self.outermost = outermost
@@ -494,33 +559,76 @@ class UnetSkipConnectionBlock(nn.Module):
             use_bias = norm_layer == nn.InstanceNorm2d
         if input_nc is None:
             input_nc = outer_nc
-        downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
-                             stride=2, padding=1, bias=use_bias)
+
+        if block_index is not None:
+            print(f"Building block {block_index}")
+
+        elif innermost is True:
+            print("Building innermost block")
+        elif outermost is True:
+            print("Building outermost block")
+
+        downconv = nn.Conv2d(
+            in_channels=input_nc,
+            out_channels=inner_nc,
+            kernel_size=4, stride=2, padding=1, bias=use_bias)
+
         downrelu = nn.LeakyReLU(0.2, True)
         downnorm = norm_layer(inner_nc)
         uprelu = nn.ReLU(True)
         upnorm = norm_layer(outer_nc)
 
+        spec = {
+            f"downconv_{block_index}_in_channels": input_nc,
+            f"downconv_{block_index}_out_channels": inner_nc
+        }
+
         if outermost:
-            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
-                                        kernel_size=4, stride=2,
-                                        padding=1)
+
+            upconv = nn.ConvTranspose2d(
+                in_channels=inner_nc * 2,
+                out_channels=outer_nc,
+                kernel_size=4, stride=2, padding=1)
+
             down = [downconv]
             up = [uprelu, upconv, nn.Tanh()]
             model = down + [submodule] + up
+
+            spec["upconv_outer_block_in_channels"] = inner_nc * 2
+            spec["upconv_outer_block_out_channels"] = outer_nc
+
         elif innermost:
-            upconv = nn.ConvTranspose2d(inner_nc, outer_nc,
-                                        kernel_size=4, stride=2,
-                                        padding=1, bias=use_bias)
+
+            upconv = nn.ConvTranspose2d(
+                in_channels=inner_nc,
+                out_channels=outer_nc,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                bias=use_bias)
+
             down = [downrelu, downconv]
             up = [uprelu, upconv, upnorm]
             model = down + up
+
+            spec["upconv_inner_block_in_channels"] = inner_nc
+            spec["upconv_inner_block_out_channels"] = outer_nc
+
         else:
-            upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
-                                        kernel_size=4, stride=2,
-                                        padding=1, bias=use_bias)
+
+            upconv = nn.ConvTranspose2d(
+                in_channels=inner_nc * 2,
+                out_channels=outer_nc,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                bias=use_bias)
+
             down = [downrelu, downconv, downnorm]
             up = [uprelu, upconv, upnorm]
+
+            spec[f"upconv_{block_index}_in_channels"] = inner_nc * 2
+            spec[f"upconv_{block_index}_out_channels"] = outer_nc
 
             if use_dropout:
                 model = down + [submodule] + up + [nn.Dropout(0.5)]
@@ -528,6 +636,8 @@ class UnetSkipConnectionBlock(nn.Module):
                 model = down + [submodule] + up
 
         self.model = nn.Sequential(*model)
+
+        print(spec)
 
     def forward(self, x):
         if self.outermost:
@@ -549,6 +659,7 @@ class NLayerDiscriminator(nn.Module):
             norm_layer      -- normalization layer
         """
         super(NLayerDiscriminator, self).__init__()
+
         if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
@@ -556,12 +667,20 @@ class NLayerDiscriminator(nn.Module):
 
         kw = 4
         padw = 1
-        sequence = [nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
+
+        sequence = [
+            nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
+            nn.LeakyReLU(0.2, True)
+        ]
+
         nf_mult = 1
         nf_mult_prev = 1
+
         for n in range(1, n_layers):  # gradually increase the number of filters
+
             nf_mult_prev = nf_mult
             nf_mult = min(2 ** n, 8)
+
             sequence += [
                 nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
                 norm_layer(ndf * nf_mult),
@@ -570,6 +689,7 @@ class NLayerDiscriminator(nn.Module):
 
         nf_mult_prev = nf_mult
         nf_mult = min(2 ** n_layers, 8)
+
         sequence += [
             nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
             norm_layer(ndf * nf_mult),
